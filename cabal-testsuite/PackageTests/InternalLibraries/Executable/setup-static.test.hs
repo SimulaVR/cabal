@@ -18,7 +18,7 @@ import System.Directory
 -- this does build shared libraries just to make sure they
 -- don't get installed, so this test doesn't work on Windows.)
 main = setupAndCabalTest $ do
-    skipUnless =<< hasSharedLibraries
+    skipUnless "no shared libs" =<< hasSharedLibraries
     withPackageDb $ do
         -- MULTI
         forM_ [False, True] $ \is_dynamic -> do
@@ -29,7 +29,7 @@ main = setupAndCabalTest $ do
             lbi <- liftIO $ getPersistBuildConfig dist_dir
             let pkg_descr = localPkgDescr lbi
                 compiler_id = compilerId (compiler lbi)
-                cname = CSubLibName $ mkUnqualComponentName "foo-internal"
+                cname = CLibName $ LSubLibName $ mkUnqualComponentName "foo-internal"
                 [target] = componentNameTargets' pkg_descr lbi cname
                 uid = componentUnitId (targetCLBI target)
                 InstallDirs{libdir=dir,dynlibdir=dyndir} =

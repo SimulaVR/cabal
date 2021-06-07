@@ -1,15 +1,131 @@
-# 2.4.0.0 (current development version)
-  * `Distribution.Simple.Haddock` now checks to ensure that it 
-    does not erroneously call Haddock with no target modules. 
-    ([#5232](https://github.com/haskell/cabal/issues/5232), 
+# 3.2.0.0 [Herbert Valerio Riedel](mailto:hvr@gnu.org) April 2020
+  * Change free text `String` fields to use `ShortText` in package description
+    and installed package info.
+  * Split `Distribution.Types.Flag` and `Distribution.Types.ConfVar`
+    `Distribution.Types.GenericPackageDescription`.
+  * Add GHC-8.10 support, including new extensions to
+    `Language.Haskell.Extension`.
+  * Use more `NonEmpty` instead of ordinary lists.
+  * Add `Distribution.Utils.Structured` for fingeprinting `Binary` blobs.
+  * Add `null`, `length` and `unsafeFromUTF8BS` to `Distribution.Utils.ShortText`.
+  * Refactor `Distribution.Utils.IOData` module.
+  * Rename `Distribution.Compat.MD5` to `Distribution.Utils.MD5`.
+  * Add `safeHead`, `safeTail`, `safeLast` to `Distribution.Utils.Generic`.
+  * Add `unsnoc` and `unsnocNE` to `Distribution.Utils.Generic`.
+  * Add `Set'` modifier to `Distribution.Parsec.Newtypes`.
+  * Add `Distribution.Compat.Async`.
+
+# 3.0.2.0 [Herbert Valerio Riedel](mailto:hvr@gnu.org) April 2020
+  * Disallow spaces around colon `:` in Dependency `build-depends` syntax
+    ([#6538](https://github.com/haskell/cabal/pull/6538)).
+  * Make `configure` accept any `pkg-config --modversion` output
+    ([#6541](https://github.com/haskell/cabal/pull/6541)).
+
+# 3.0.1.0 [Herbert Valerio Riedel](mailto:hvr@gnu.org) April 2020
+  * Add GHC-8.8 flags to `normaliseGhcFlags`
+    ([#6379](https://github.com/haskell/cabal/pull/6379)).
+  * Typo fixes
+    ([#6372](https://github.com/haskell/cabal/pull/6372)).
+  * Limit version number parts to contain at most 9 digits
+    ([#6386](https://github.com/haskell/cabal/pull/6386)).
+  * Fix boundless sublibrary dependency parse failure
+    ([#5846](https://github.com/haskell/cabal/issues/5846)).
+  * `cabal check` verifies `cpp-options` more pedantically, allowing only
+    options starting with `-D` and `-U`.
+  * Don’t rebuild world when new ghc flags that affect how error
+    messages are presented is specified.
+  * Fix dropExeExtension behaviour on Windows
+    ([#6287](https://github.com/haskell/cabal/pull/6287)).
+
+# 3.0.0.0 [Mikhail Glushenkov](mailto:mikhail.glushenkov@gmail.com) August 2019
+  * The 3.0 migration guide gives advice on adapting Custom setup
+    scripts to backwards-incompatible changes in this release:
+    https://github.com/haskell/cabal/wiki/3.0-migration-guide.
+  * Due to [#5119](https://github.com/haskell/cabal/issues/5119), the
+    `cabal check` warning for bounds on internal libraries has been
+    disabled.
+  * Introduce set notation for `^>=` and `==` operators
+    ([#5906](https://github.com/haskell/cabal/pull/5906)).
+  * 'check' reports warnings for various ghc-\*-options fields separately
+    ([#5342](https://github.com/haskell/cabal/issues/5432)).
+  * `KnownExtension`: added new extensions `DerivingVia` and
+    `EmptyDataDeriving`.
+  * Add `extra-dynamic-library-flavours`, to specify extra dynamic library
+    flavours to build and install from a .cabal file.
+  * `autoconfUserHooks` now passes `--host=$HOST` when cross-compiling
+  * Introduce multiple public libraries feature
+    ([#5526](https://github.com/haskell/cabal/pull/5526)).
+    * New build-depends syntax
+    * Add a set of library components to the `Dependency` datatype
+    * New `visibility` field in the `library` stanza
+    * New `LibraryVisibility` field in `InstalledPackageInfo`
+    * New syntax for the `--dependency` Cabal flag
+  * Static linking
+    * Add `--enable-executable-static` flag for building fully
+      static executables (GHC's normal "statish" linking links
+      Haskell libraries statically, but libc and system dependencies
+      dynamically). This new flag links everything statically.
+    * Note you likely want to link against `musl` or another libc that
+      supports fully static linking;
+      [`glibc` has some issues](https://sourceware.org/glibc/wiki/FAQ#Even_statically_linked_programs_need_some_shared_libraries_which_is_not_acceptable_for_me.__What_can_I_do.3F)
+      with fully static linking.
+  * Fix corrupted config file header for non-ASCII package names
+    ([2557](https://github.com/haskell/cabal/issues/2557)).
+  * Extend `Distribution.Simple.Utils.rewriteFileEx` from ASCII to UTF-8 encoding.
+  * Change the arguments of `Newtype` class to better suit @DeriveAnyClass@ usage,
+    add default implementation in terms of `coerce` / `unsafeCoerce`.
+  * Implement support for response file arguments to defaultMain* and cabal-install.
+  * Uniformly provide 'Semigroup' instances for `base < 4.9` via `semigroups` package
+  * Implement `{cmm,asm}-{sources,options} buildinfo fields for
+    separate compilation of C-- and ASM source files (#6033).
+  * Setting `debug-info` now implies `library-stripping: False` and
+    `executable-stripping: False) ([#2702](https://github.com/haskell/cabal/issues/2702))
+  * `Setup.hs copy` and `install` now work in the presence of
+    `data-files` that use `**` syntax
+    ([#6125](https://github.com/haskell/cabal/issues/6125)).
+
+----
+
+### 2.4.1.1 [Mikhail Glushenkov](mailto:mikhail.glushenkov@gmail.com) December 2018
+
+  * Fix `--with-compiler` failing to locate compiler on Windows
+    ([#5753](https://github.com/haskell/cabal/pull/5753)).
+  * Cabal can once again be built with GHC 7.8 and 7.6
+    ([#5730](https://github.com/haskell/cabal/pull/5730)).
+
+### 2.4.1.0 [Mikhail Glushenkov](mailto:mikhail.glushenkov@gmail.com) November 2018
+
+  * Warnings in autogenerated files are now silenced
+    ([#5678](https://github.com/haskell/cabal/pull/5678)).
+  * Improved recompilation avoidance, especially when using GHC 8.6
+    ([#5589](https://github.com/haskell/cabal/pull/5589)).
+  * Do not error on empty packagedbs in `getInstalledPackages`
+    ([#5516](https://github.com/haskell/cabal/issues/5516)).
+
+
+### 2.4.0.1 [Mikhail Glushenkov](mailto:mikhail.glushenkov@gmail.com) September 2018
+
+  * Allow arguments to be passed to `Setup.hs haddock` for `build-type:configure`
+    ([#5503](https://github.com/haskell/cabal/issues/5503)).
+
+# 2.4.0.0 [Mikhail Glushenkov](mailto:mikhail.glushenkov@gmail.com) September 2018
+  * Due to [#5119](https://github.com/haskell/cabal/issues/5119), the
+    `cabal check` warning for bounds on internal libraries has been
+    disabled.
+  * `Distribution.Simple.Haddock` now checks to ensure that it
+    does not erroneously call Haddock with no target modules.
+    ([#5232](https://github.com/haskell/cabal/issues/5232),
     [#5459](https://github.com/haskell/cabal/issues/5459)).
-  * Add more Lens combinators (`to`, `traversed`, `filtered`, 
-    `non`) and an optic to access the modules in a component
-    of a `PackageDescription` by the `ComponentName`.
+  * Add `getting` (less general than `to`) Lens combinator,
+    `non`) and an optics to access the modules in a component
+    of a `PackageDescription` by the `ComponentName`:
+    `componentBuildInfo` and `componentModules`
+  * Linker `ld-options` are now passed to GHC as `-optl` options
+    ([#4925](https://github.com/haskell/cabal/pull/4925)).
   * Add `readGhcEnvironmentFile` to parse GHC environment files.
   * Drop support for GHC 7.4, since it is out of our support window
     (and has been for over a year!)
-  * Deprecate `preSDist`, `sDistHook`, and `postSDist` in service of 
+  * Deprecate `preSDist`, `sDistHook`, and `postSDist` in service of
     `new-sdist`, since they violate key invariants of the new-build
     ecosystem. Use `autogen-modules` and `build-tool-depends` instead.
     ([#5389](https://github.com/haskell/cabal/pull/5389)).
@@ -49,7 +165,7 @@
       [#784](https://github.com/haskell/cabal/issues/784),
       [#5057](https://github.com/haskell/cabal/issues/5057)).
     * Wildcard syntax errors (misplaced `*`, etc), wildcards that
-      refer to missing directoies, and wildcards that do not match
+      refer to missing directories, and wildcards that do not match
       anything are now all detected by `cabal check`.
     * Wildcard ('globbing') functions have been moved from
       `Distribution.Simple.Utils` to `Distribution.Simple.Glob` and
@@ -77,10 +193,20 @@
     ([#5386](https://github.com/haskell/cabal/issues/5386)).
   * `Distribution.PackageDescription.Check.checkPackageFiles` now
     accepts a `Verbosity` argument.
+  * Added a parameter to
+    `Distribution.Backpack.ConfiguredComponent.toConfiguredComponent` in order to fix
+    [#5409](https://github.com/haskell/cabal/issues/5409).
+  * Partially silence `abi-depends` warnings
+    ([#5465](https://github.com/haskell/cabal/issues/5465)).
+  * Foreign libraries are now linked against the threaded RTS when the
+    'ghc-options: -threaded' flag is used
+    ([#5431](https://github.com/haskell/cabal/pull/5431)).
+  * Pass command line arguments to `hsc2hs` using response files when possible
+    ([#3122](https://github.com/haskell/cabal/issues/3122)).
 
 ----
 
-## 2.2.0.1 (current 2.2 development version)
+## 2.2.0.1 [Mikhail Glushenkov](mailto:mikhail.glushenkov@gmail.com) March 2018
 
   * Fix `checkPackageFiles` for relative directories ([#5206](https://github.com/haskell/cabal/issues/5206))
 
@@ -137,7 +263,7 @@
     types (#4701).
   * Support for building with Win32 version 2.6 (#4835).
   * Change `compilerExtensions` and `ghcOptExtensionMap` to contain
-    `Maybe Flag`s, since a supported extention can lack a flag (#4443).
+    `Maybe Flag`s, since a supported extension can lack a flag (#4443).
   * Pretty-printing of `.cabal` files is slightly different due to
     parser changes. For an example, see
     https://mail.haskell.org/pipermail/cabal-devel/2017-December/010414.html.
@@ -383,8 +509,8 @@
   * Support GHC 7.10.
   * Experimental support for emitting DWARF debug info.
   * Preliminary support for relocatable packages.
-  * Allow cabal to be used inside cabal exec enviroments.
-  * hpc: support mutliple "ways" (e.g. profiling and vanilla).
+  * Allow cabal to be used inside cabal exec environments.
+  * hpc: support multiple "ways" (e.g. profiling and vanilla).
   * Support GHCJS.
   * Improved command line documentation.
   * Add `-none` constraint syntax for version ranges (#2093).
@@ -500,7 +626,7 @@
   * Support for finding installed packages for hugs
   * Cabal version macros now have proper parenthesis
   * Reverted change to filter out deps of non-buildable components
-  * Fix for registering implace when using a specific package db
+  * Fix for registering inplace when using a specific package db
   * Fix mismatch between $os and $arch path template variables
   * Fix for finding ar.exe on Windows, always pick ghc's version
   * Fix for intra-package dependencies with ghc-6.12
@@ -662,7 +788,7 @@
 # 1.2.0  [Duncan Coutts](mailto:duncan.coutts@worc.ox.ac.uk) Sept 2007
   * To be included in GHC 6.8.x
   * New configurations feature
-  * Can make haddock docs link to hilighted sources (with hscolour)
+  * Can make haddock docs link to highlighted sources (with hscolour)
   * New flag to allow linking to haddock docs on the web
   * Supports pkg-config
   * New field `build-tools` for tool dependencies
@@ -702,7 +828,7 @@
 
   * Released with GHC 6.6
   * Added support for hoogle
-  * Allow profiling and normal builds of libs to be chosen indepentantly
+  * Allow profiling and normal builds of libs to be chosen independently
   * Default installation directories on Win32 changed
   * Register haddock docs with ghc-pkg
   * Get haddock to make hyperlinks to dependent package docs
@@ -719,7 +845,7 @@
   * It is no longer necessary to run `configure` before `clean` or `sdist`
   * Added support for ghc's `-split-objs`
   * Initial support for JHC
-  * Ignore extension fields in `.cabal` files (fields begining with "`x-`")
+  * Ignore extension fields in `.cabal` files (fields beginning with "`x-`")
   * Some changes to command hooks API to improve consistency
   * Hugs support improvements
   * Added GeneralisedNewtypeDeriving language extension
@@ -782,7 +908,7 @@
   * Lots of bug fixes
   * spaces can sometimes be used instead of commas
   * A user manual has appeared (Thanks, ross!)
-  * for ghc 6.4, configures versionsed depends properly
+  * for ghc 6.4, configures versioned depends properly
   * more features to `./setup haddock`
 
 ----

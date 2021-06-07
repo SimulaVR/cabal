@@ -1,22 +1,22 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Main (main) where
 
-import Control.Lens   hiding ((.=))
-import Data.Aeson     (FromJSON (..), Value, eitherDecode, object, withObject, (.:), (.=))
-import Data.Char      (toUpper, isAlpha)
-import Data.Foldable  (for_)
-import Data.Semigroup ((<>))
-import Data.Text      (Text)
+import Control.Lens     (imap)
+import Data.Aeson       (FromJSON (..), eitherDecode, withObject, (.:))
+import Data.List        (sortOn)
+import Data.Semigroup   ((<>))
+import Data.Text        (Text)
+import Data.Traversable (for)
 
 import qualified Data.ByteString.Lazy as LBS
+import qualified Data.Set             as Set
 import qualified Data.Text            as T
-import qualified Data.Text.IO         as T
-import qualified Data.Text.Lazy       as TL
-import qualified Data.Text.Lazy.IO    as TL
 import qualified Options.Applicative  as O
-import qualified Text.Microstache     as M
+import qualified Zinza                as Z
 
-data Opts = Opts FilePath FilePath FilePath
+import GenUtils
+
+data Opts = Opts FilePath (PerV FilePath) FilePath
 
 main :: IO ()
 main = generate =<< O.execParser opts where
@@ -26,15 +26,22 @@ main = generate =<< O.execParser opts where
         ]
 
     parser :: O.Parser Opts
-    parser = Opts <$> template <*> licenses <*> output
+    parser = Opts <$> template <*> licensesAll <*> output
+
+    licensesAll = PerV
+        <$> licenses "3.0"
+        <*> licenses "3.2"
+        <*> licenses "3.6"
+        <*> licenses "3.9"
+        <*> licenses "3.10"
 
     template = O.strArgument $ mconcat
         [ O.metavar "SPDX.LicenseExceptionId.template.hs"
         , O.help    "Module template file"
         ]
 
-    licenses = O.strArgument $ mconcat
-        [ O.metavar "exceptions.json"
+    licenses ver = O.strArgument $ mconcat
+        [ O.metavar $ "exceptions" ++  ver ++ ".json"
         , O.help    "Exceptions JSON. https://github.com/spdx/license-list-data"
         ]
 
@@ -44,65 +51,56 @@ main = generate =<< O.execParser opts where
         ]
 
 generate :: Opts -> IO ()
-generate (Opts tmplFile fn out) = do
-    contents <- LBS.readFile fn
-    LicenseList ls <- either fail pure $ eitherDecode contents
-    template <- M.compileMustacheFile tmplFile
-    let (ws, rendered) = generate' ls template
-    for_ ws $ putStrLn . M.displayMustacheWarning
-    TL.writeFile out (header <> "\n" <> rendered)
+generate (Opts tmplFile fns out) = do
+    lss <- for fns $ \fn -> either fail pure . eitherDecode =<< LBS.readFile fn
+    template <- Z.parseAndCompileTemplateIO tmplFile
+    output <- generate' lss template
+    writeFile out (header <> "\n" <> output)
     putStrLn $ "Generated file " ++ out
 
-header :: TL.Text
-header = "-- This file is generated. See Makefile's spdx rule"
-
-generate' :: [License] -> M.Template -> ([M.MustacheWarning], TL.Text)
-generate' ls template = M.renderMustacheW template $ object
-    [ "licenseIds" .= licenseIds
-    , "licenses"   .= licenseValues
-    ]
+generate'
+    :: PerV LicenseList
+    -> (Input -> IO String)
+    -> IO String
+generate' lss template = template $ Input
+    { inputLicenseIds       = licenseIds
+    , inputLicenses         = licenseValues
+    , inputLicenseList_all  = mkLicenseList (== allVers)
+    , inputLicenseList_perv = tabulate $ \ver -> mkLicenseList
+        (\vers -> vers /= allVers && Set.member ver vers)
+    }
   where
-    constructorNames :: [(Text,License)]
+    constructorNames :: [(Text, License, Set.Set SPDXLicenseListVersion)]
     constructorNames
-        = map (\l -> (toConstructorName $ licenseId l, l))
-        $ filter (not . licenseDeprecated)
-        $ ls
+        = map (\(l, tags) -> (toConstructorName $ licenseId l, l, tags))
+        $ combine licenseId $ \ver -> filterDeprecated $ unLL $ index ver lss
 
-    licenseValues :: [Value]
-    licenseValues = flip map constructorNames $ \(c, l) -> object
-        [ "licenseCon"    .= c
-        , "licenseId"     .= textShow (licenseId l)
-        , "licenseName"   .= textShow (licenseName l)
-        ]
+    filterDeprecated = filter (not . licenseDeprecated)
+
+    licenseValues :: [InputLicense]
+    licenseValues = flip map constructorNames $ \(c, l, _) -> InputLicense
+        { ilConstructor   = c
+        , ilId            = textShow (licenseId l)
+        , ilName          = textShow (licenseName l)
+        , ilIsOsiApproved = False -- not used in exceptions
+        , ilIsFsfLibre    = False -- not used in exceptions
+        }
 
     licenseIds :: Text
-    licenseIds = T.intercalate "\n" $ flip imap constructorNames $ \i (c, l) ->
+    licenseIds = T.intercalate "\n" $ flip imap constructorNames $ \i (c, l, vers) ->
         let pfx = if i == 0 then "    = " else "    | "
-        in pfx <> c <> " -- ^ @" <> licenseId l <> "@, " <> licenseName l
+            versInfo
+                | vers == allVers = ""
+                | otherwise       = foldMap (\v -> ", " <> prettyVer v) vers
+        in pfx <> c <> " -- ^ @" <> licenseId l <> "@, " <> licenseName l <> versInfo
 
-textShow :: Text -> Text
-textShow = T.pack . show
-
-toConstructorName :: Text -> Text
-toConstructorName t = t
-    & each %~ f
-    & ix 0 %~ toUpper
-    & special
-  where
-    f '.' = '_'
-    f '-' = '_'
-    f '+' = '\''
-    f c   = c
-
-    special :: Text -> Text
-    special "389_exception" = "DS389_exception"
-    special t      = t
+    mkLicenseList :: (Set.Set SPDXLicenseListVersion -> Bool) -> Text
+    mkLicenseList p = mkList [ n | (n, _, vers) <- constructorNames, p vers ]
 
 -------------------------------------------------------------------------------
--- Licenses
+-- JSON inputs
 -------------------------------------------------------------------------------
 
--- TODO: move to common module, confusing naming. This is LicenseException!
 data License = License
     { licenseId          :: !Text
     , licenseName        :: !Text
@@ -119,9 +117,10 @@ instance FromJSON License where
         fixSpace '\n' = ' '
         fixSpace c =   c
 
-newtype LicenseList = LicenseList [License]
+newtype LicenseList = LL { unLL :: [License] }
   deriving (Show)
 
 instance FromJSON LicenseList where
-    parseJSON = withObject "Exceptions list" $ \obj -> LicenseList
-        <$> obj .: "exceptions"
+    parseJSON = withObject "Exceptions list" $ \obj ->
+        LL . sortOn (OrdT . T.toLower . licenseId)
+            <$> obj .: "exceptions"

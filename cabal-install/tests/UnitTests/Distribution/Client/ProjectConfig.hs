@@ -1,5 +1,12 @@
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE RecordWildCards #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
+
+-- simplifier goes nuts otherwise
+#if __GLASGOW_HASKELL__ < 806
+{-# OPTIONS_GHC -funfolding-use-threshold=30 #-}
+#endif
 
 module UnitTests.Distribution.Client.ProjectConfig (tests) where
 
@@ -9,39 +16,43 @@ import Control.Applicative
 #endif
 import Data.Map (Map)
 import qualified Data.Map as Map
-import Data.List
+import Data.List (isPrefixOf, intercalate, (\\))
+import Network.URI (URI)
+
+import Distribution.Deprecated.ParseUtils
+import qualified Distribution.Deprecated.ReadP as Parse
 
 import Distribution.Package
-import Distribution.PackageDescription hiding (Flag)
+import Distribution.PackageDescription
 import Distribution.Compiler
 import Distribution.Version
-import Distribution.ParseUtils
-import Distribution.Text as Text
-import Distribution.Simple.Compiler
-import Distribution.Simple.Setup
-import Distribution.Simple.InstallDirs
-import qualified Distribution.Compat.ReadP as Parse
-import Distribution.Simple.Utils
 import Distribution.Simple.Program.Types
 import Distribution.Simple.Program.Db
+import Distribution.Simple.Utils (toUTF8BS)
+import Distribution.Types.PackageVersionConstraint
+
+import Distribution.Parsec
+import Distribution.Pretty
 
 import Distribution.Client.Types
+import Distribution.Client.CmdInstall.ClientInstallFlags
 import Distribution.Client.Dependency.Types
-import Distribution.Client.BuildReports.Types
 import Distribution.Client.Targets
+import Distribution.Client.Types.SourceRepo
 import Distribution.Utils.NubList
-import Network.URI
 
 import Distribution.Solver.Types.PackageConstraint
 import Distribution.Solver.Types.ConstraintSource
-import Distribution.Solver.Types.OptionalStanza
 import Distribution.Solver.Types.Settings
 
 import Distribution.Client.ProjectConfig
 import Distribution.Client.ProjectConfig.Legacy
 
 import UnitTests.Distribution.Client.ArbitraryInstances
+import UnitTests.Distribution.Client.TreeDiffInstances ()
 
+import Data.TreeDiff.Class
+import Data.TreeDiff.QuickCheck
 import Test.Tasty
 import Test.Tasty.QuickCheck
 
@@ -89,24 +100,27 @@ tests =
 -- Round trip: conversion to/from legacy types
 --
 
-roundtrip :: Eq a => (a -> b) -> (b -> a) -> a -> Bool
+roundtrip :: (Eq a, ToExpr a, Show b) => (a -> b) -> (b -> a) -> a -> Property
 roundtrip f f_inv x =
-    (f_inv . f) x == x
+    counterexample (show y) $
+    x `ediffEq` f_inv y -- no counterexample with y, as they not have ToExpr
+  where
+    y = f x
 
-roundtrip_legacytypes :: ProjectConfig -> Bool
+roundtrip_legacytypes :: ProjectConfig -> Property
 roundtrip_legacytypes =
     roundtrip convertToLegacyProjectConfig
               convertLegacyProjectConfig
 
 
-prop_roundtrip_legacytypes_all :: ProjectConfig -> Bool
+prop_roundtrip_legacytypes_all :: ProjectConfig -> Property
 prop_roundtrip_legacytypes_all config =
     roundtrip_legacytypes
       config {
         projectConfigProvenance = mempty
       }
 
-prop_roundtrip_legacytypes_packages :: ProjectConfig -> Bool
+prop_roundtrip_legacytypes_packages :: ProjectConfig -> Property
 prop_roundtrip_legacytypes_packages config =
     roundtrip_legacytypes
       config {
@@ -117,22 +131,22 @@ prop_roundtrip_legacytypes_packages config =
         projectConfigSpecificPackage = mempty
       }
 
-prop_roundtrip_legacytypes_buildonly :: ProjectConfigBuildOnly -> Bool
+prop_roundtrip_legacytypes_buildonly :: ProjectConfigBuildOnly -> Property
 prop_roundtrip_legacytypes_buildonly config =
     roundtrip_legacytypes
       mempty { projectConfigBuildOnly = config }
 
-prop_roundtrip_legacytypes_shared :: ProjectConfigShared -> Bool
+prop_roundtrip_legacytypes_shared :: ProjectConfigShared -> Property
 prop_roundtrip_legacytypes_shared config =
     roundtrip_legacytypes
       mempty { projectConfigShared = config }
 
-prop_roundtrip_legacytypes_local :: PackageConfig -> Bool
+prop_roundtrip_legacytypes_local :: PackageConfig -> Property
 prop_roundtrip_legacytypes_local config =
     roundtrip_legacytypes
       mempty { projectConfigLocalPackages = config }
 
-prop_roundtrip_legacytypes_specific :: Map PackageName PackageConfig -> Bool
+prop_roundtrip_legacytypes_specific :: Map PackageName PackageConfig -> Property
 prop_roundtrip_legacytypes_specific config =
     roundtrip_legacytypes
       mempty { projectConfigSpecificPackage = MapMappend config }
@@ -142,18 +156,18 @@ prop_roundtrip_legacytypes_specific config =
 -- Round trip: printing and parsing config
 --
 
-roundtrip_printparse :: ProjectConfig -> Bool
+roundtrip_printparse :: ProjectConfig -> Property
 roundtrip_printparse config =
-    case (fmap convertLegacyProjectConfig
-        . parseLegacyProjectConfig
-        . showLegacyProjectConfig
-        . convertToLegacyProjectConfig)
-          config of
-      ParseOk _ x -> x == config { projectConfigProvenance = mempty }
-      _           -> False
+    case fmap convertLegacyProjectConfig (parseLegacyProjectConfig "unused" (toUTF8BS str)) of
+      ParseOk _ x     -> counterexample ("shown:\n" ++ str) $
+          x `ediffEq` config { projectConfigProvenance = mempty }
+      ParseFailed err -> counterexample ("shown:\n" ++ str ++ "\nERROR: " ++ show err) False
+  where
+    str :: String
+    str = showLegacyProjectConfig (convertToLegacyProjectConfig config)
 
 
-prop_roundtrip_printparse_all :: ProjectConfig -> Bool
+prop_roundtrip_printparse_all :: ProjectConfig -> Property
 prop_roundtrip_printparse_all config =
     roundtrip_printparse config {
       projectConfigBuildOnly =
@@ -165,9 +179,9 @@ prop_roundtrip_printparse_all config =
 
 prop_roundtrip_printparse_packages :: [PackageLocationString]
                                    -> [PackageLocationString]
-                                   -> [SourceRepo]
-                                   -> [Dependency]
-                                   -> Bool
+                                   -> [SourceRepoList]
+                                   -> [PackageVersionConstraint]
+                                   -> Property
 prop_roundtrip_printparse_packages pkglocstrs1 pkglocstrs2 repos named =
     roundtrip_printparse
       mempty {
@@ -177,7 +191,7 @@ prop_roundtrip_printparse_packages pkglocstrs1 pkglocstrs2 repos named =
         projectPackagesNamed    = named
       }
 
-prop_roundtrip_printparse_buildonly :: ProjectConfigBuildOnly -> Bool
+prop_roundtrip_printparse_buildonly :: ProjectConfigBuildOnly -> Property
 prop_roundtrip_printparse_buildonly config =
     roundtrip_printparse
       mempty {
@@ -187,13 +201,14 @@ prop_roundtrip_printparse_buildonly config =
 hackProjectConfigBuildOnly :: ProjectConfigBuildOnly -> ProjectConfigBuildOnly
 hackProjectConfigBuildOnly config =
     config {
-      -- These two fields are only command line transitory things, not
+      -- These fields are only command line transitory things, not
       -- something to be recorded persistently in a config file
-      projectConfigOnlyDeps = mempty,
-      projectConfigDryRun   = mempty
+      projectConfigOnlyDeps     = mempty,
+      projectConfigOnlyDownload = mempty,
+      projectConfigDryRun       = mempty
     }
 
-prop_roundtrip_printparse_shared :: ProjectConfigShared -> Bool
+prop_roundtrip_printparse_shared :: ProjectConfigShared -> Property
 prop_roundtrip_printparse_shared config =
     roundtrip_printparse
       mempty {
@@ -216,7 +231,7 @@ hackProjectConfigShared config =
     }
 
 
-prop_roundtrip_printparse_local :: PackageConfig -> Bool
+prop_roundtrip_printparse_local :: PackageConfig -> Property
 prop_roundtrip_printparse_local config =
     roundtrip_printparse
       mempty {
@@ -224,7 +239,7 @@ prop_roundtrip_printparse_local config =
       }
 
 prop_roundtrip_printparse_specific :: Map PackageName (NonMEmpty PackageConfig)
-                                   -> Bool
+                                   -> Property
 prop_roundtrip_printparse_specific config =
     roundtrip_printparse
       mempty {
@@ -248,18 +263,23 @@ prop_parsePackageLocationTokenQ :: PackageLocationString -> Bool
 prop_parsePackageLocationTokenQ (PackageLocationString str) =
     runReadP parsePackageLocationTokenQ (renderPackageLocationToken str) == Just str
 
-prop_roundtrip_printparse_RelaxedDep :: RelaxedDep -> Bool
+prop_roundtrip_printparse_RelaxedDep :: RelaxedDep -> Property
 prop_roundtrip_printparse_RelaxedDep rdep =
-    runReadP Text.parse (Text.display rdep) == Just rdep
+    counterexample (prettyShow rdep) $
+    eitherParsec (prettyShow rdep) == Right rdep
 
-prop_roundtrip_printparse_RelaxDeps :: RelaxDeps -> Bool
+prop_roundtrip_printparse_RelaxDeps :: RelaxDeps -> Property
 prop_roundtrip_printparse_RelaxDeps rdep =
-    runReadP Text.parse (Text.display rdep) == Just rdep
+    counterexample (prettyShow rdep) $
+    Right rdep `ediffEq` eitherParsec (prettyShow rdep)
 
-prop_roundtrip_printparse_RelaxDeps' :: RelaxDeps -> Bool
+prop_roundtrip_printparse_RelaxDeps' :: RelaxDeps -> Property
 prop_roundtrip_printparse_RelaxDeps' rdep =
-    runReadP Text.parse (go $ Text.display rdep) == Just rdep
+    counterexample rdep' $
+    Right rdep `ediffEq` eitherParsec rdep'
   where
+    rdep' = go (prettyShow rdep)
+
     -- replace 'all' tokens by '*'
     go :: String -> String
     go [] = []
@@ -328,6 +348,7 @@ instance Arbitrary PackageLocationString where
       , arbitraryGlobLikeStr
       , show <$> (arbitrary :: Gen URI)
       ]
+      `suchThat` (\xs -> not ("{" `isPrefixOf` xs))
 
 arbitraryGlobLikeStr :: Gen String
 arbitraryGlobLikeStr = outerTerm
@@ -342,17 +363,27 @@ arbitraryGlobLikeStr = outerTerm
     braces s   = "{" ++ s ++ "}"
 
 
+instance Arbitrary ClientInstallFlags where
+    arbitrary =
+      ClientInstallFlags
+        <$> arbitrary
+        <*> arbitraryFlag arbitraryShortToken
+        <*> arbitrary
+        <*> arbitrary
+        <*> arbitraryFlag arbitraryShortToken
+
 instance Arbitrary ProjectConfigBuildOnly where
     arbitrary =
       ProjectConfigBuildOnly
         <$> arbitrary
         <*> arbitrary
         <*> arbitrary
-        <*> (toNubList <$> shortListOf 2 arbitrary)             --  4
+        <*> arbitrary
+        <*> (toNubList <$> shortListOf 2 arbitrary)
         <*> arbitrary
         <*> arbitrary
         <*> arbitrary
-        <*> (fmap getShortToken <$> arbitrary)                  --  8
+        <*> (fmap getShortToken <$> arbitrary)
         <*> arbitrary
         <*> arbitraryNumJobs
         <*> arbitrary
@@ -362,13 +393,14 @@ instance Arbitrary ProjectConfigBuildOnly where
         <*> arbitrary
         <*> (fmap getShortToken <$> arbitrary)
         <*> (fmap getShortToken <$> arbitrary)
-        <*> (fmap getShortToken <$> arbitrary)
+        <*> arbitrary
       where
         arbitraryNumJobs = fmap (fmap getPositive) <$> arbitrary
 
     shrink ProjectConfigBuildOnly { projectConfigVerbosity = x00
                                   , projectConfigDryRun = x01
                                   , projectConfigOnlyDeps = x02
+                                  , projectConfigOnlyDownload = x18
                                   , projectConfigSummaryFile = x03
                                   , projectConfigLogFile = x04
                                   , projectConfigBuildReports = x05
@@ -383,10 +415,11 @@ instance Arbitrary ProjectConfigBuildOnly where
                                   , projectConfigIgnoreExpiry = x14
                                   , projectConfigCacheDir = x15
                                   , projectConfigLogsDir = x16
-                                  , projectConfigStoreDir = x17 } =
+                                  , projectConfigClientInstallFlags = x17 } =
       [ ProjectConfigBuildOnly { projectConfigVerbosity = x00'
                                , projectConfigDryRun = x01'
                                , projectConfigOnlyDeps = x02'
+                               , projectConfigOnlyDownload = x18'
                                , projectConfigSummaryFile = x03'
                                , projectConfigLogFile = x04'
                                , projectConfigBuildReports = x05'
@@ -401,120 +434,102 @@ instance Arbitrary ProjectConfigBuildOnly where
                                , projectConfigIgnoreExpiry = x14'
                                , projectConfigCacheDir = x15
                                , projectConfigLogsDir = x16
-                               , projectConfigStoreDir = x17}
+                               , projectConfigClientInstallFlags = x17' }
       | ((x00', x01', x02', x03', x04'),
          (x05', x06', x07', x08', x09'),
-         (x10', x11', x12',       x14'))
+         (x10', x11', x12',       x14'),
+         (            x17', x18'      ))
           <- shrink
                ((x00, x01, x02, x03, x04),
                 (x05, x06, x07, x08, preShrink_NumJobs x09),
-                (x10, x11, x12,      x14))
+                (x10, x11, x12,      x14),
+                (          x17, x18     ))
       ]
       where
         preShrink_NumJobs  = fmap (fmap Positive)
         postShrink_NumJobs = fmap (fmap getPositive)
 
 instance Arbitrary ProjectConfigShared where
-    arbitrary =
-      ProjectConfigShared
-        <$> arbitraryFlag arbitraryShortToken
-        <*> arbitraryFlag arbitraryShortToken
-        <*> arbitraryFlag arbitraryShortToken
-        <*> arbitrary
-        <*> arbitraryFlag arbitraryShortToken
-        <*> arbitraryFlag arbitraryShortToken
-        <*> arbitrary
-        <*> arbitrary
-        <*> (toNubList <$> listOf arbitraryShortToken)
-        <*> arbitrary
-        <*> arbitraryConstraints
-        <*> shortListOf 2 arbitrary
-        <*> arbitrary <*> arbitrary
-        <*> arbitrary <*> arbitrary
-        <*> arbitrary <*> arbitrary
-        <*> arbitrary <*> arbitrary
-        <*> arbitrary
-        <*> arbitrary
-        <*> arbitrary
-        <*> (toNubList <$> listOf arbitraryShortToken)
+    arbitrary = do
+        projectConfigDistDir              <- arbitraryFlag arbitraryShortToken
+        projectConfigConfigFile           <- arbitraryFlag arbitraryShortToken
+        projectConfigProjectFile          <- arbitraryFlag arbitraryShortToken
+        projectConfigIgnoreProject        <- arbitrary
+        projectConfigHcFlavor             <- arbitrary
+        projectConfigHcPath               <- arbitraryFlag arbitraryShortToken
+        projectConfigHcPkg                <- arbitraryFlag arbitraryShortToken
+        projectConfigHaddockIndex         <- arbitrary
+        projectConfigRemoteRepos          <- arbitrary
+        projectConfigLocalNoIndexRepos    <- arbitrary
+        projectConfigActiveRepos          <- arbitrary
+        projectConfigIndexState           <- arbitrary
+        projectConfigStoreDir             <- arbitraryFlag arbitraryShortToken
+        projectConfigConstraints          <- arbitraryConstraints
+        projectConfigPreferences          <- shortListOf 2 arbitrary
+        projectConfigCabalVersion         <- arbitrary
+        projectConfigSolver               <- arbitrary
+        projectConfigAllowOlder           <- arbitrary
+        projectConfigAllowNewer           <- arbitrary
+        projectConfigWriteGhcEnvironmentFilesPolicy <- arbitrary
+        projectConfigMaxBackjumps         <- arbitrary
+        projectConfigReorderGoals         <- arbitrary
+        projectConfigCountConflicts       <- arbitrary
+        projectConfigFineGrainedConflicts <- arbitrary
+        projectConfigMinimizeConflictSet  <- arbitrary
+        projectConfigStrongFlags          <- arbitrary
+        projectConfigAllowBootLibInstalls <- arbitrary
+        projectConfigOnlyConstrained      <- arbitrary
+        projectConfigPerComponent         <- arbitrary
+        projectConfigIndependentGoals     <- arbitrary
+        projectConfigProgPathExtra        <- toNubList <$> listOf arbitraryShortToken
+        return ProjectConfigShared {..}
       where
         arbitraryConstraints :: Gen [(UserConstraint, ConstraintSource)]
         arbitraryConstraints =
             fmap (\uc -> (uc, projectConfigConstraintSource)) <$> arbitrary
 
-    shrink ProjectConfigShared { projectConfigDistDir = x00
-                               , projectConfigProjectFile = x01
-                               , projectConfigHcFlavor = x02
-                               , projectConfigHcPath = x03
-                               , projectConfigHcPkg = x04
-                               , projectConfigHaddockIndex = x05
-                               , projectConfigRemoteRepos = x06
-                               , projectConfigLocalRepos = x07
-                               , projectConfigIndexState = x08
-                               , projectConfigConstraints = x09
-                               , projectConfigPreferences = x10
-                               , projectConfigCabalVersion = x11
-                               , projectConfigSolver = x12
-                               , projectConfigAllowOlder = x13
-                               , projectConfigAllowNewer = x14
-                               , projectConfigMaxBackjumps = x15
-                               , projectConfigReorderGoals = x16
-                               , projectConfigCountConflicts = x17
-                               , projectConfigStrongFlags = x18
-                               , projectConfigAllowBootLibInstalls = x19
-                               , projectConfigPerComponent = x20
-                               , projectConfigIndependentGoals = x21
-                               , projectConfigConfigFile = x22
-                               , projectConfigProgPathExtra = x23} =
-      [ ProjectConfigShared { projectConfigDistDir = x00'
-                            , projectConfigProjectFile = x01'
-                            , projectConfigHcFlavor = x02'
-                            , projectConfigHcPath = fmap getNonEmpty x03'
-                            , projectConfigHcPkg = fmap getNonEmpty x04'
-                            , projectConfigHaddockIndex = x05'
-                            , projectConfigRemoteRepos = x06'
-                            , projectConfigLocalRepos = x07'
-                            , projectConfigIndexState = x08'
-                            , projectConfigConstraints = postShrink_Constraints x09'
-                            , projectConfigPreferences = x10'
-                            , projectConfigCabalVersion = x11'
-                            , projectConfigSolver = x12'
-                            , projectConfigAllowOlder = x13'
-                            , projectConfigAllowNewer = x14'
-                            , projectConfigMaxBackjumps = x15'
-                            , projectConfigReorderGoals = x16'
-                            , projectConfigCountConflicts = x17'
-                            , projectConfigStrongFlags = x18'
-                            , projectConfigAllowBootLibInstalls = x19'
-                            , projectConfigPerComponent = x20'
-                            , projectConfigIndependentGoals = x21'
-                            , projectConfigConfigFile = x22'
-                            , projectConfigProgPathExtra = x23'}
-      | ((x00', x01', x02', x03', x04'),
-         (x05', x06', x07', x08', x09'),
-         (x10', x11', x12', x13', x14'),
-         (x15', x16', x17', x18', x19'),
-          x20', x21', x22', x23')
-          <- shrink
-               ((x00, x01, x02, fmap NonEmpty x03, fmap NonEmpty x04),
-                (x05, x06, x07, x08, preShrink_Constraints x09),
-                (x10, x11, x12, x13, x14),
-                (x15, x16, x17, x18, x19),
-                 x20, x21, x22, x23)
-      ]
+    shrink ProjectConfigShared {..} = runShrinker $ pure ProjectConfigShared
+        <*> shrinker projectConfigDistDir
+        <*> shrinker projectConfigConfigFile
+        <*> shrinker projectConfigProjectFile
+        <*> shrinker projectConfigIgnoreProject
+        <*> shrinker projectConfigHcFlavor
+        <*> shrinkerAla (fmap NonEmpty) projectConfigHcPath
+        <*> shrinkerAla (fmap NonEmpty) projectConfigHcPkg
+        <*> shrinker projectConfigHaddockIndex
+        <*> shrinker projectConfigRemoteRepos
+        <*> shrinker projectConfigLocalNoIndexRepos
+        <*> shrinker projectConfigActiveRepos
+        <*> shrinker projectConfigIndexState
+        <*> shrinker projectConfigStoreDir
+        <*> shrinkerPP preShrink_Constraints postShrink_Constraints projectConfigConstraints
+        <*> shrinker projectConfigPreferences
+        <*> shrinker projectConfigCabalVersion
+        <*> shrinker projectConfigSolver
+        <*> shrinker projectConfigAllowOlder
+        <*> shrinker projectConfigAllowNewer
+        <*> shrinker projectConfigWriteGhcEnvironmentFilesPolicy
+        <*> shrinker projectConfigMaxBackjumps
+        <*> shrinker projectConfigReorderGoals
+        <*> shrinker projectConfigCountConflicts
+        <*> shrinker projectConfigFineGrainedConflicts
+        <*> shrinker projectConfigMinimizeConflictSet
+        <*> shrinker projectConfigStrongFlags
+        <*> shrinker projectConfigAllowBootLibInstalls
+        <*> shrinker projectConfigOnlyConstrained
+        <*> shrinker projectConfigPerComponent
+        <*> shrinker projectConfigIndependentGoals
+        <*> shrinker projectConfigProgPathExtra
       where
         preShrink_Constraints  = map fst
         postShrink_Constraints = map (\uc -> (uc, projectConfigConstraintSource))
 
 projectConfigConstraintSource :: ConstraintSource
 projectConfigConstraintSource =
-    ConstraintSourceProjectConfig "TODO"
+    ConstraintSourceProjectConfig "unused"
 
 instance Arbitrary ProjectConfigProvenance where
     arbitrary = elements [Implicit, Explicit "cabal.project"]
-
-instance Arbitrary FlagAssignment where
-    arbitrary = mkFlagAssignment <$> arbitrary
 
 instance Arbitrary PackageConfig where
     arbitrary =
@@ -529,6 +544,7 @@ instance Arbitrary PackageConfig where
         <*> arbitrary
         <*> arbitrary <*> arbitrary <*> arbitrary
         <*> arbitrary <*> arbitrary
+        <*> arbitrary
         <*> arbitrary <*> arbitrary
         <*> arbitrary <*> arbitrary
         <*> shortListOf 5 arbitraryShortToken
@@ -555,6 +571,14 @@ instance Arbitrary PackageConfig where
         <*> arbitraryFlag arbitraryShortToken
         <*> arbitrary
         <*> arbitrary
+        <*> arbitrary
+        <*> arbitrary
+        <*> arbitrary
+        <*> arbitrary
+        <*> arbitraryFlag arbitraryShortToken
+        <*> arbitrary
+        <*> shortListOf 5 arbitrary
+        <*> shortListOf 5 arbitrary
       where
         arbitraryProgramName :: Gen String
         arbitraryProgramName =
@@ -569,6 +593,7 @@ instance Arbitrary PackageConfig where
                          , packageConfigSharedLib = x05
                          , packageConfigStaticLib = x42
                          , packageConfigDynExe = x06
+                         , packageConfigFullyStaticExe = x50
                          , packageConfigProf = x07
                          , packageConfigProfLib = x08
                          , packageConfigProfExe = x09
@@ -606,7 +631,15 @@ instance Arbitrary PackageConfig where
                          , packageConfigHaddockQuickJump = x43
                          , packageConfigHaddockHscolourCss = x39
                          , packageConfigHaddockContents = x40
-                         , packageConfigHaddockForHackage = x41 } =
+                         , packageConfigHaddockForHackage = x41
+                         , packageConfigTestHumanLog = x44
+                         , packageConfigTestMachineLog = x45
+                         , packageConfigTestShowDetails = x46
+                         , packageConfigTestKeepTix = x47
+                         , packageConfigTestWrapper = x48
+                         , packageConfigTestFailWhenNoTestSuites = x49
+                         , packageConfigTestTestOptions = x51
+                         , packageConfigBenchmarkOptions = x52 } =
       [ PackageConfig { packageConfigProgramPaths = postShrink_Paths x00'
                       , packageConfigProgramArgs = postShrink_Args x01'
                       , packageConfigProgramPathExtra = x02'
@@ -615,6 +648,7 @@ instance Arbitrary PackageConfig where
                       , packageConfigSharedLib = x05'
                       , packageConfigStaticLib = x42'
                       , packageConfigDynExe = x06'
+                      , packageConfigFullyStaticExe = x50'
                       , packageConfigProf = x07'
                       , packageConfigProfLib = x08'
                       , packageConfigProfExe = x09'
@@ -652,19 +686,28 @@ instance Arbitrary PackageConfig where
                       , packageConfigHaddockQuickJump = x43'
                       , packageConfigHaddockHscolourCss = fmap getNonEmpty x39'
                       , packageConfigHaddockContents = x40'
-                      , packageConfigHaddockForHackage = x41' }
+                      , packageConfigHaddockForHackage = x41'
+                      , packageConfigTestHumanLog = x44'
+                      , packageConfigTestMachineLog = x45'
+                      , packageConfigTestShowDetails = x46'
+                      , packageConfigTestKeepTix = x47'
+                      , packageConfigTestWrapper = x48'
+                      , packageConfigTestFailWhenNoTestSuites = x49'
+                      , packageConfigTestTestOptions = x51'
+                      , packageConfigBenchmarkOptions = x52' }
       |  (((x00', x01', x02', x03', x04'),
-          (x05', x42', x06', x07', x08', x09'),
+          (x05', x42', x06', x50', x07', x08', x09'),
           (x10', x11', x12', x13', x14'),
           (x15', x16', x17', x18', x19')),
          ((x20', x20_1', x21', x22', x23', x24'),
           (x25', x26', x27', x28', x29'),
           (x30', x31', x32', (x33', x33_1'), x34'),
           (x35', x36', x37', x38', x43', x39'),
-          (x40', x41')))
+          (x40', x41'),
+          (x44', x45', x46', x47', x48', x49', x51', x52')))
           <- shrink
              (((preShrink_Paths x00, preShrink_Args x01, x02, x03, x04),
-                (x05, x42, x06, x07, x08, x09),
+                (x05, x42, x06, x50, x07, x08, x09),
                 (x10, x11, map NonEmpty x12, x13, x14),
                 (x15, map NonEmpty x16,
                   map NonEmpty x17,
@@ -674,7 +717,8 @@ instance Arbitrary PackageConfig where
                  (x25, x26, x27, x28, x29),
                  (x30, x31, x32, (x33, x33_1), x34),
                  (x35, x36, fmap NonEmpty x37, x38, x43, fmap NonEmpty x39),
-                 (x40, x41)))
+                 (x40, x41),
+                 (x44, x45, x46, x47, x48, x49, x51, x52)))
       ]
       where
         preShrink_Paths  = Map.map NonEmpty
@@ -690,108 +734,44 @@ instance Arbitrary PackageConfig where
                          . Map.map (map getNonEmpty . getNonEmpty)
                          . Map.mapKeys getNoShrink
 
-instance Arbitrary HaddockTarget where
-    arbitrary = elements [ForHackage, ForDevelopment]
 
-instance Arbitrary SourceRepo where
-    arbitrary = (SourceRepo RepoThis
-                           <$> arbitrary
-                           <*> (fmap getShortToken <$> arbitrary)
-                           <*> (fmap getShortToken <$> arbitrary)
-                           <*> (fmap getShortToken <$> arbitrary)
-                           <*> (fmap getShortToken <$> arbitrary)
-                           <*> (fmap getShortToken <$> arbitrary))
-                `suchThat` (/= emptySourceRepo RepoThis)
 
-    shrink (SourceRepo _ x1 x2 x3 x4 x5 x6) =
-      [ repo
-      | ((x1', x2', x3'), (x4', x5', x6'))
-          <- shrink ((x1,
-                      fmap ShortToken x2,
-                      fmap ShortToken x3),
-                     (fmap ShortToken x4,
-                      fmap ShortToken x5,
-                      fmap ShortToken x6))
-      , let repo = SourceRepo RepoThis x1'
-                              (fmap getShortToken x2')
-                              (fmap getShortToken x3')
-                              (fmap getShortToken x4')
-                              (fmap getShortToken x5')
-                              (fmap getShortToken x6')
-      , repo /= emptySourceRepo RepoThis
-      ]
+instance f ~ [] => Arbitrary (SourceRepositoryPackage f) where
+    arbitrary = SourceRepositoryPackage
+        <$> arbitrary
+        <*> (getShortToken <$> arbitrary)
+        <*> (fmap getShortToken <$> arbitrary)
+        <*> (fmap getShortToken <$> arbitrary)
+        <*> (fmap getShortToken <$> shortListOf 3 arbitrary)
+        <*> (fmap getShortToken <$> shortListOf 3 arbitrary)
 
-instance Arbitrary RepoType where
-    arbitrary = elements knownRepoTypes
-
-instance Arbitrary ReportLevel where
-    arbitrary = elements [NoReports .. DetailedReports]
-
-instance Arbitrary CompilerFlavor where
-    arbitrary = elements knownCompilerFlavors
-
-instance Arbitrary a => Arbitrary (InstallDirs a) where
-    arbitrary =
-      InstallDirs
-        <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary --  4
-        <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary --  8
-        <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary -- 12
-        <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary -- 16
-
-instance Arbitrary PackageDB where
-    arbitrary = oneof [ pure GlobalPackageDB
-                      , pure UserPackageDB
-                      , SpecificPackageDB . getShortToken <$> arbitrary
-                      ]
+    shrink SourceRepositoryPackage {..} = runShrinker $ pure SourceRepositoryPackage
+        <*> shrinker srpType
+        <*> shrinkerAla ShortToken srpLocation
+        <*> shrinkerAla (fmap ShortToken) srpTag
+        <*> shrinkerAla (fmap ShortToken) srpBranch
+        <*> shrinkerAla (fmap ShortToken) srpSubdir
+        <*> shrinkerAla (fmap ShortToken) srpCommand
 
 instance Arbitrary RemoteRepo where
     arbitrary =
       RemoteRepo
-        <$> arbitraryShortToken `suchThat` (not . (":" `isPrefixOf`))
+        <$> arbitrary
         <*> arbitrary  -- URI
         <*> arbitrary
         <*> listOf arbitraryRootKey
-        <*> (fmap getNonNegative arbitrary)
+        <*> fmap getNonNegative arbitrary
         <*> pure False
       where
         arbitraryRootKey =
           shortListOf1 5 (oneof [ choose ('0', '9')
                                 , choose ('a', 'f') ])
 
-instance Arbitrary UserConstraintScope where
-    arbitrary = oneof [ UserQualified <$> arbitrary <*> arbitrary
-                      , UserAnySetupQualifier <$> arbitrary
-                      , UserAnyQualifier <$> arbitrary
-                      ]
-
-instance Arbitrary UserQualifier where
-    arbitrary = oneof [ pure UserQualToplevel
-                      , UserQualSetup <$> arbitrary
-
-                      -- -- TODO: Re-enable UserQualExe tests once we decide on a syntax.
-                      -- , UserQualExe <$> arbitrary <*> arbitrary
-                      ]
-
-instance Arbitrary UserConstraint where
-    arbitrary = UserConstraint <$> arbitrary <*> arbitrary
-
-instance Arbitrary PackageProperty where
-    arbitrary = oneof [ PackagePropertyVersion <$> arbitrary
-                      , pure PackagePropertyInstalled
-                      , pure PackagePropertySource
-                      , PackagePropertyFlags  . mkFlagAssignment <$> shortListOf1 3 arbitrary
-                      , PackagePropertyStanzas . (\x->[x]) <$> arbitrary
-                      ]
-
-instance Arbitrary OptionalStanza where
-    arbitrary = elements [minBound..maxBound]
-
-instance Arbitrary FlagName where
-    arbitrary = mkFlagName <$> flagident
-      where
-        flagident   = lowercase <$> shortListOf1 5 (elements flagChars)
-                      `suchThat` (("-" /=) . take 1)
-        flagChars   = "-_" ++ ['a'..'z']
+instance Arbitrary LocalRepo where
+    arbitrary = LocalRepo
+        <$> arbitrary
+        <*> elements ["/tmp/foo", "/tmp/bar"] -- TODO: generate valid absolute paths
+        <*> arbitrary
 
 instance Arbitrary PreSolver where
     arbitrary = elements [minBound..maxBound]
@@ -802,6 +782,12 @@ instance Arbitrary ReorderGoals where
 instance Arbitrary CountConflicts where
     arbitrary = CountConflicts <$> arbitrary
 
+instance Arbitrary FineGrainedConflicts where
+    arbitrary = FineGrainedConflicts <$> arbitrary
+
+instance Arbitrary MinimizeConflictSet where
+    arbitrary = MinimizeConflictSet <$> arbitrary
+
 instance Arbitrary IndependentGoals where
     arbitrary = IndependentGoals <$> arbitrary
 
@@ -811,62 +797,7 @@ instance Arbitrary StrongFlags where
 instance Arbitrary AllowBootLibInstalls where
     arbitrary = AllowBootLibInstalls <$> arbitrary
 
-instance Arbitrary AllowNewer where
-    arbitrary = AllowNewer <$> arbitrary
-
-instance Arbitrary AllowOlder where
-    arbitrary = AllowOlder <$> arbitrary
-
-instance Arbitrary RelaxDeps where
-    arbitrary = oneof [ pure mempty
-                      , RelaxDepsSome <$> shortListOf1 3 arbitrary
-                      , pure RelaxDepsAll
+instance Arbitrary OnlyConstrained where
+    arbitrary = oneof [ pure OnlyConstrainedAll
+                      , pure OnlyConstrainedNone
                       ]
-
-instance Arbitrary RelaxDepMod where
-    arbitrary = elements [RelaxDepModNone, RelaxDepModCaret]
-
-instance Arbitrary RelaxDepScope where
-    arbitrary = oneof [ pure RelaxDepScopeAll
-                      , RelaxDepScopePackage <$> arbitrary
-                      , RelaxDepScopePackageId <$> (PackageIdentifier <$> arbitrary <*> arbitrary)
-                      ]
-
-instance Arbitrary RelaxDepSubject where
-    arbitrary = oneof [ pure RelaxDepSubjectAll
-                      , RelaxDepSubjectPkg <$> arbitrary
-                      ]
-
-instance Arbitrary RelaxedDep where
-    arbitrary = RelaxedDep <$> arbitrary <*> arbitrary <*> arbitrary
-
-instance Arbitrary ProfDetailLevel where
-    arbitrary = elements [ d | (_,_,d) <- knownProfDetailLevels ]
-
-instance Arbitrary OptimisationLevel where
-    arbitrary = elements [minBound..maxBound]
-
-instance Arbitrary DebugInfoLevel where
-    arbitrary = elements [minBound..maxBound]
-
-instance Arbitrary URI where
-    arbitrary =
-      URI <$> elements ["file:", "http:", "https:"]
-          <*> (Just <$> arbitrary)
-          <*> (('/':) <$> arbitraryURIToken)
-          <*> (('?':) <$> arbitraryURIToken)
-          <*> pure ""
-
-instance Arbitrary URIAuth where
-    arbitrary =
-      URIAuth <$> pure ""   -- no password as this does not roundtrip
-              <*> arbitraryURIToken
-              <*> arbitraryURIPort
-
-arbitraryURIToken :: Gen String
-arbitraryURIToken =
-    shortListOf1 6 (elements (filter isUnreserved ['\0'..'\255']))
-
-arbitraryURIPort :: Gen String
-arbitraryURIPort =
-    oneof [ pure "", (':':) <$> shortListOf1 4 (choose ('0','9')) ]

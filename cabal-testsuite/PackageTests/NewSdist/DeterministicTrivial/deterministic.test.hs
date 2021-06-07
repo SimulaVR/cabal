@@ -6,12 +6,18 @@ import System.FilePath
     ( (</>) )
 
 main = cabalTest $ do
-    cabal "new-sdist" ["deterministic"]
+    cabal "v2-sdist" ["deterministic"]
     env <- getTestEnv
     let dir = testCurrentDir env
         knownSdist = dir </> "deterministic-0.tar.gz"
         mySdist = dir </> "dist-newstyle" </> "sdist" </> "deterministic-0.tar.gz"
-    
+
+    -- This helps to understand why this test fails, if it does:
+    --
+    -- shell "tar" ["-tzvf", knownSdist]
+    -- shell "tar" ["-tzvf", mySdist]
+    --
+
     known <- liftIO (BS.readFile knownSdist)
     unknown <- liftIO (BS.readFile mySdist)
 

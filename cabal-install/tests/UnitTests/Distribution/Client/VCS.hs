@@ -1,22 +1,19 @@
 {-# LANGUAGE RecordWildCards, NamedFieldPuns #-}
 module UnitTests.Distribution.Client.VCS (tests) where
 
+import Distribution.Client.Compat.Prelude
 import Distribution.Client.VCS
 import Distribution.Client.RebuildMonad
          ( execRebuild )
 import Distribution.Simple.Program
 import Distribution.Verbosity as Verbosity
-import Distribution.Types.SourceRepo
+import Distribution.Client.Types.SourceRepo (SourceRepositoryPackage (..), SourceRepoProxy)
 
-import Data.List
+import Data.List (mapAccumL)
 import Data.Tuple
 import qualified Data.Map as Map
-import Data.Map (Map)
 import qualified Data.Set as Set
-import Data.Set (Set)
-import Data.Char (isSpace)
 
-import Control.Monad
 import qualified Control.Monad.State as State
 import Control.Monad.State (StateT, liftIO, execStateT)
 import Control.Exception
@@ -50,29 +47,26 @@ import UnitTests.TempTestDir (withTestDir, removeDirectoryRecursiveHack)
 --
 tests :: MTimeChange -> [TestTree]
 tests mtimeChange =
-  [ testGroup "check VCS test framework" $
-    [ testProperty "git"    prop_framework_git
-    ] ++
-    [ testProperty "darcs" (prop_framework_darcs mtimeChange)
-    | enableDarcsTests
+  [ testGroup "git"
+    [ testProperty "check VCS test framework"    prop_framework_git
+    , testProperty "cloneSourceRepo"             prop_cloneRepo_git
+    , testProperty "syncSourceRepos"             prop_syncRepos_git
     ]
-  , testGroup "cloneSourceRepo" $
-    [ testProperty "git"    prop_cloneRepo_git
-    ] ++
-    [ testProperty "darcs" (prop_cloneRepo_darcs mtimeChange)
-    | enableDarcsTests
-    ]
-  , testGroup "syncSourceRepos" $
-    [ testProperty "git"    prop_syncRepos_git
-    ] ++
-    [ testProperty "darcs" (prop_syncRepos_darcs mtimeChange)
-    | enableDarcsTests
-    ]
-  ]
-  where
-    -- for the moment they're not yet working
-    enableDarcsTests = False
 
+    -- for the moment they're not yet working
+  , testGroup "darcs" $ const []
+    [ testProperty "check VCS test framework"    $ prop_framework_darcs mtimeChange
+    , testProperty "cloneSourceRepo"             $ prop_cloneRepo_darcs mtimeChange
+    , testProperty "syncSourceRepos"             $ prop_syncRepos_darcs mtimeChange
+    ]
+
+  , testGroup "pijul" $ const []
+    [ testProperty "check VCS test framework"    prop_framework_pijul
+    , testProperty "cloneSourceRepo"             prop_cloneRepo_pijul
+    , testProperty "syncSourceRepos"             prop_syncRepos_pijul
+    ]
+
+  ]
 
 prop_framework_git :: BranchingRepoRecipe -> Property
 prop_framework_git =
@@ -86,6 +80,12 @@ prop_framework_darcs mtimeChange =
   . prop_framework vcsDarcs (vcsTestDriverDarcs mtimeChange)
   . WithoutBranchingSupport
 
+prop_framework_pijul :: BranchingRepoRecipe -> Property
+prop_framework_pijul =
+    ioProperty
+  . prop_framework vcsPijul vcsTestDriverPijul
+  . WithBranchingSupport
+
 prop_cloneRepo_git :: BranchingRepoRecipe -> Property
 prop_cloneRepo_git =
     ioProperty
@@ -98,6 +98,12 @@ prop_cloneRepo_darcs mtimeChange =
     ioProperty
   . prop_cloneRepo vcsDarcs (vcsTestDriverDarcs mtimeChange)
   . WithoutBranchingSupport
+
+prop_cloneRepo_pijul :: BranchingRepoRecipe -> Property
+prop_cloneRepo_pijul =
+    ioProperty
+  . prop_cloneRepo vcsPijul vcsTestDriverPijul
+  . WithBranchingSupport
 
 prop_syncRepos_git :: RepoDirSet -> SyncTargetIterations -> PrngSeed
                    -> BranchingRepoRecipe -> Property
@@ -116,6 +122,13 @@ prop_syncRepos_darcs  mtimeChange destRepoDirs syncTargetSetIterations seed =
                    destRepoDirs syncTargetSetIterations seed
   . WithoutBranchingSupport
 
+prop_syncRepos_pijul :: RepoDirSet -> SyncTargetIterations -> PrngSeed
+                   -> BranchingRepoRecipe -> Property
+prop_syncRepos_pijul destRepoDirs syncTargetSetIterations seed =
+    ioProperty
+  . prop_syncRepos vcsPijul vcsTestDriverPijul
+                   destRepoDirs syncTargetSetIterations seed
+  . WithBranchingSupport
 
 -- ------------------------------------------------------------
 -- * General test setup
@@ -196,11 +209,14 @@ prop_cloneRepo vcs mkVCSTestDriver repoRecipe =
         removeDirectoryRecursiveHack verbosity destRepoPath
       where
         destRepoPath = tmpdir </> "dest"
-        repo = (emptySourceRepo RepoThis) {
-                 repoType     = Just (vcsRepoType vcsVCS),
-                 repoLocation = Just vcsRepoRoot,
-                 repoTag      = Just tagname
-               }
+        repo = SourceRepositoryPackage
+            { srpType     = vcsRepoType vcsVCS
+            , srpLocation = vcsRepoRoot
+            , srpTag      = Just tagname
+            , srpBranch   = Nothing
+            , srpSubdir   = []
+            , srpCommand  = []
+            }
     verbosity = silent
 
 
@@ -264,7 +280,7 @@ checkSyncRepos verbosity VCSTestDriver { vcsVCS = vcs, vcsIgnoreFiles }
                (SyncTargetIterations syncTargetSetIterations) (PrngSeed seed) =
     mapM_ checkSyncTargetSet syncTargetSets
   where
-    checkSyncTargetSet :: [(SourceRepo, FilePath, RepoWorkingState)] -> IO ()
+    checkSyncTargetSet :: [(SourceRepoProxy, FilePath, RepoWorkingState)] -> IO ()
     checkSyncTargetSet syncTargets = do
       _ <- execRebuild "root-unused" $
            syncSourceRepos verbosity vcs
@@ -282,22 +298,25 @@ checkSyncRepos verbosity VCSTestDriver { vcsVCS = vcs, vcsIgnoreFiles }
 pickSyncTargetSets :: RepoType -> RepoState
                    -> FilePath -> [FilePath]
                    -> StdGen
-                   -> [[(SourceRepo, FilePath, RepoWorkingState)]]
+                   -> [[(SourceRepoProxy, FilePath, RepoWorkingState)]]
 pickSyncTargetSets repoType repoState srcRepoPath dstReposPath =
     assert (Map.size (allTags repoState) > 0) $
     unfoldr (Just . swap . pickSyncTargetSet)
   where
-    pickSyncTargetSet :: Rand [(SourceRepo, FilePath, RepoWorkingState)]
+    pickSyncTargetSet :: Rand [(SourceRepoProxy, FilePath, RepoWorkingState)]
     pickSyncTargetSet = flip (mapAccumL (flip pickSyncTarget)) dstReposPath
 
-    pickSyncTarget :: FilePath -> Rand (SourceRepo, FilePath, RepoWorkingState)
+    pickSyncTarget :: FilePath -> Rand (SourceRepoProxy, FilePath, RepoWorkingState)
     pickSyncTarget destRepoPath prng =
         (prng', (repo, destRepoPath, workingState))
       where
-        repo                = (emptySourceRepo RepoThis) {
-                                repoType     = Just repoType,
-                                repoLocation = Just srcRepoPath,
-                                repoTag      = Just tag
+        repo                = SourceRepositoryPackage
+                              { srpType     = repoType
+                              , srpLocation = srcRepoPath
+                              , srpTag      = Just tag
+                              , srpBranch   = Nothing
+                              , srpSubdir   = Proxy
+                              , srpCommand  = []
                               }
         (tag, workingState) = Map.elemAt tagIdx (allTags repoState)
         (tagIdx, prng')     = randomR (0, Map.size (allTags repoState) - 1) prng
@@ -631,7 +650,7 @@ vcsTestDriverGit verbosity vcs repoRoot =
         return (Just commit')
 
     , vcsTagState = \_ tagname ->
-        git ["tag", "--force", tagname]
+        git ["tag", "--force", "--no-sign", tagname]
 
     , vcsSwitchBranch = \RepoState{allBranches} branchname -> do
         unless (branchname `Map.member` allBranches) $
@@ -692,3 +711,47 @@ vcsTestDriverDarcs mtimeChange verbosity vcs repoRoot =
                            }
     darcs = runProgramInvocation verbosity . darcsInvocation
 
+
+vcsTestDriverPijul :: Verbosity -> VCS ConfiguredProgram
+                 -> FilePath -> VCSTestDriver
+vcsTestDriverPijul verbosity vcs repoRoot =
+    VCSTestDriver {
+      vcsVCS = vcs
+
+    , vcsRepoRoot = repoRoot
+
+    , vcsIgnoreFiles = Set.empty
+
+    , vcsInit =
+        pijul $ ["init"]
+
+    , vcsAddFile = \_ filename ->
+        pijul ["add", filename]
+
+    , vcsCommitChanges = \_state -> do
+        pijul $ ["record", "-a", "-m 'a patch'"
+                , "-A 'A <a@example.com>'"
+                ]
+        commit <- pijul' ["log"]
+        let commit' = takeWhile (not . isSpace) commit
+        return (Just commit')
+
+    -- tags work differently in pijul...
+    -- so this is wrong
+    , vcsTagState = \_ tagname ->
+        pijul ["tag", tagname]
+
+    , vcsSwitchBranch = \_ branchname -> do
+--        unless (branchname `Map.member` allBranches) $
+--          pijul ["from-branch", branchname]
+        pijul $ ["checkout", branchname]
+
+    , vcsCheckoutTag = Left $ \tagname ->
+        pijul $ ["checkout", tagname]
+    }
+  where
+    gitInvocation args = (programInvocation (vcsProgram vcs) args) {
+                           progInvokeCwd = Just repoRoot
+                         }
+    pijul  = runProgramInvocation       verbosity . gitInvocation
+    pijul' = getProgramInvocationOutput verbosity . gitInvocation

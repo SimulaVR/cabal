@@ -1,5 +1,8 @@
 module UnitTests.Distribution.Client.FileMonitor (tests) where
 
+import Distribution.Parsec (simpleParsec)
+
+import Data.Proxy (Proxy (..))
 import Control.Monad
 import Control.Exception
 import Control.Concurrent (threadDelay)
@@ -9,13 +12,14 @@ import qualified System.Directory as IO
 import Prelude hiding (writeFile)
 import qualified Prelude as IO (writeFile)
 
-import Distribution.Text (simpleParse)
 import Distribution.Compat.Binary
 import Distribution.Simple.Utils (withTempDirectory)
 import Distribution.Verbosity (silent)
 
 import Distribution.Client.FileMonitor
 import Distribution.Compat.Time
+import Distribution.Utils.Structured (structureHash, Structured)
+import GHC.Fingerprint (Fingerprint (..))
 
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -23,10 +27,15 @@ import Test.Tasty.HUnit
 
 tests :: Int -> [TestTree]
 tests mtimeChange =
-  [ testCase "sanity check mtimes"   $ testFileMTimeSanity mtimeChange
+  [ testGroup "Structured hashes"
+    [ testCase "MonitorStateFile"    $ structureHash (Proxy :: Proxy MonitorStateFile)    @?= Fingerprint 0xe4108804c34962f6 0x06e94f8fc9e48e13
+    , testCase "MonitorStateGlob"    $ structureHash (Proxy :: Proxy MonitorStateGlob)    @?= Fingerprint 0xfd8f6be0e8258fe7 0xdb5fac737139bca6
+    , testCase "MonitorStateFileSet" $ structureHash (Proxy :: Proxy MonitorStateFileSet) @?= Fingerprint 0xb745f4ea498389a5 0x70db6adb5078aa27
+    ]
+  , testCase "sanity check mtimes"   $ testFileMTimeSanity mtimeChange
   , testCase "sanity check dirs"     $ testDirChangeSanity mtimeChange
   , testCase "no monitor cache"      testNoMonitorCache
-  , testCase "corrupt monitor cache" testCorruptMonitorCache
+  , testCaseSteps "corrupt monitor cache" testCorruptMonitorCache
   , testCase "empty monitor"         testEmptyMonitor
   , testCase "missing file"          testMissingFile
   , testCase "change file"           $ testChangedFile mtimeChange
@@ -149,18 +158,21 @@ testNoMonitorCache =
     reason @?= MonitorFirstRun
 
 -- write garbage into the binary cache file
-testCorruptMonitorCache :: Assertion
-testCorruptMonitorCache =
+testCorruptMonitorCache :: (String -> IO ()) -> Assertion
+testCorruptMonitorCache step =
   withFileMonitor $ \root monitor -> do
+    step "Writing broken file"
     IO.writeFile (fileMonitorCacheFile monitor) "broken"
     reason <- expectMonitorChanged root monitor ()
     reason @?= MonitorCorruptCache
 
+    step "Updating file monitor"
     updateMonitor root monitor [] () ()
     (res, files) <- expectMonitorUnchanged root monitor ()
     res   @?= ()
     files @?= []
 
+    step "Writing broken file again"
     IO.writeFile (fileMonitorCacheFile monitor) "broken"
     reason2 <- expectMonitorChanged root monitor ()
     reason2 @?= MonitorCorruptCache
@@ -807,11 +819,11 @@ absoluteRoot (RootPath root) = IO.canonicalizePath root
 
 monitorFileGlobStr :: String -> MonitorFilePath
 monitorFileGlobStr globstr
-  | Just glob <- simpleParse globstr = monitorFileGlob glob
-  | otherwise                        = error $ "Failed to parse " ++ globstr
+  | Just glob <- simpleParsec globstr = monitorFileGlob glob
+  | otherwise                         = error $ "Failed to parse " ++ globstr
 
 
-expectMonitorChanged :: (Binary a, Binary b)
+expectMonitorChanged :: (Binary a, Structured a, Binary b, Structured b)
                      => RootPath -> FileMonitor a b -> a
                      -> IO (MonitorChangedReason a)
 expectMonitorChanged root monitor key = do
@@ -820,7 +832,7 @@ expectMonitorChanged root monitor key = do
     MonitorChanged reason -> return reason
     MonitorUnchanged _ _  -> throwIO $ HUnitFailure Nothing "expected change"
 
-expectMonitorUnchanged :: (Binary a, Binary b)
+expectMonitorUnchanged :: (Binary a, Structured a, Binary b, Structured b)
                         => RootPath -> FileMonitor a b -> a
                         -> IO (b, [MonitorFilePath])
 expectMonitorUnchanged root monitor key = do
@@ -829,19 +841,19 @@ expectMonitorUnchanged root monitor key = do
     MonitorChanged _reason   -> throwIO $ HUnitFailure Nothing "expected no change"
     MonitorUnchanged b files -> return (b, files)
 
-checkChanged :: (Binary a, Binary b)
+checkChanged :: (Binary a, Structured a, Binary b, Structured b)
              => RootPath -> FileMonitor a b
              -> a -> IO (MonitorChanged a b)
 checkChanged (RootPath root) monitor key =
   checkFileMonitorChanged monitor root key
 
-updateMonitor :: (Binary a, Binary b)
+updateMonitor :: (Binary a, Structured a, Binary b, Structured b)
               => RootPath -> FileMonitor a b
               -> [MonitorFilePath] -> a -> b -> IO ()
 updateMonitor (RootPath root) monitor files key result =
   updateFileMonitor monitor root Nothing files key result
 
-updateMonitorWithTimestamp :: (Binary a, Binary b)
+updateMonitorWithTimestamp :: (Binary a, Structured a, Binary b, Structured b)
               => RootPath -> FileMonitor a b -> MonitorTimestamp
               -> [MonitorFilePath] -> a -> b -> IO ()
 updateMonitorWithTimestamp (RootPath root) monitor timestamp files key result =

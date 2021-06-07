@@ -13,7 +13,7 @@ main = setupAndCabalTest $ do
 
         -- Calling sdist without running configure first makes test fail with:
         -- "Exception: Run the 'configure' command first."
-        -- This is becuase we are calling getPersistBuildConfig
+        -- This is because we are calling getPersistBuildConfig
 
         configureResult <- setup' "configure" []
         sdistResult <- setup' "sdist" []
@@ -25,16 +25,16 @@ main = setupAndCabalTest $ do
         let gotTestSuite  = head $ testSuites  (localPkgDescr lbi)
         let gotBenchmark  = head $ benchmarks  (localPkgDescr lbi)
         assertEqual "library 'autogen-modules' field does not match expected"
-                [fromString "MyLibHelperModule"]
+                [fromString "Paths_AutogenModules", fromString "MyLibHelperModule"]
                 (libModulesAutogen gotLibrary)
         assertEqual "executable 'autogen-modules' field does not match expected"
-                [fromString "MyExeHelperModule"]
+                [fromString "Paths_AutogenModules", fromString "MyExeHelperModule"]
                 (exeModulesAutogen gotExecutable)
         assertEqual "test-suite 'autogen-modules' field does not match expected"
-                [fromString "MyTestHelperModule"]
+                [fromString "Paths_AutogenModules", fromString "MyTestHelperModule"]
                 (testModulesAutogen gotTestSuite)
         assertEqual "benchmark 'autogen-modules' field does not match expected"
-                [fromString "MyBenchHelperModule"]
+                [fromString "Paths_AutogenModules", fromString "MyBenchHelperModule"]
                 (benchmarkModulesAutogen gotBenchmark)
 
         -- Package check messages.

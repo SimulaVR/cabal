@@ -4,9 +4,9 @@ import Test.Cabal.Prelude
 -- in the repository.
 main = withShorterPathForNewBuildStore $ \storeDir ->
   cabalTest $ do
-    skipUnless =<< hasNewBuildCompatBootCabal
+    skipUnless "no v2-build compatible boot-Cabal" =<< hasNewBuildCompatBootCabal
     withRepo "repo" $ do
-      r <- recordMode DoNotRecord $ cabalG' ["--store-dir=" ++ storeDir] "new-build" ["pkg"]
+      r <- recordMode DoNotRecord $ cabalG' ["--store-dir=" ++ storeDir] "v2-build" ["pkg"]
       -- pkg's setup script should print out a message that it imported from
       -- setup-dep:
       assertOutputContains "pkg Setup.hs: setup-dep-2.0" r
