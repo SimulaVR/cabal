@@ -1786,7 +1786,6 @@ libAbiHash verbosity _pkg_descr lbi lib clbi = do
           vanillaArgs0 { ghcOptPackageDBs = [GlobalPackageDB]
                        , ghcOptPackages = mempty }
       sharedArgs = vanillaArgs `mappend` mempty {
-                       ghcOptDynLinkMode = toFlag GhcDynamicOnly,
                        ghcOptFPic        = toFlag True,
                        ghcOptHiSuffix    = toFlag "dyn_hi",
                        ghcOptObjSuffix   = toFlag "dyn_o",
