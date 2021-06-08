@@ -1501,13 +1501,18 @@ gbuild verbosity numJobs pkg_descr lbi bm clbi = do
     GBuildFLib flib -> do
       let rtsInfo  = extractRtsInfo lbi
           rtsOptLinkLibs = [
-              if needDynamic
-                  then if threaded
-                            then dynRtsThreadedLib (rtsDynamicInfo rtsInfo)
-                            else dynRtsVanillaLib (rtsDynamicInfo rtsInfo)
-                  else if threaded
-                           then statRtsThreadedLib (rtsStaticInfo rtsInfo)
-                           else statRtsVanillaLib (rtsStaticInfo rtsInfo)
+              if needProfiling
+                 then if threaded
+                      then statRtsThreadedProfilingLib (rtsStaticInfo rtsInfo)
+                      else statRtsProfilingLib (rtsStaticInfo rtsInfo)
+                 else
+                     if needDynamic
+                        then if threaded
+                             then dynRtsThreadedLib (rtsDynamicInfo rtsInfo)
+                             else dynRtsVanillaLib (rtsDynamicInfo rtsInfo)
+                        else if threaded
+                             then statRtsThreadedLib (rtsStaticInfo rtsInfo)
+                             else statRtsVanillaLib (rtsStaticInfo rtsInfo)
               ]
           linkOpts = case foreignLibType flib of
             ForeignLibNativeShared ->
