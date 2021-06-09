@@ -1,0 +1,1 @@
+(import ../../../pinned-nixpkgs.nix { }).haskellPackages.callPackage ./Cabal.nix { }
